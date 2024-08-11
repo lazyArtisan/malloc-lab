@@ -46,9 +46,12 @@
 
 /////////////// 전방 선언 /////////////////
 
+static void *extend_heap(size_t words);
+void *mm_malloc(size_t size);
 static void *find_fit(size_t asize);
 static void place(void *bp, size_t asize);
 static void *coalesce(void *bp);
+void *mm_realloc(void *ptr, size_t size);
 
 /*********************************************************
  * NOTE TO STUDENTS: Before you do anything else, please
@@ -100,10 +103,13 @@ static void *extend_heap(size_t words)
 /*
  * mm_init - initialize the malloc package.
  */
+
+static char *heap_listp;
+
 int mm_init(void)
 {
+    // char *heap_listp = NULL;
     /* 빈 heap 생성 */
-    void *heap_listp;
     if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1)
         return -1;
     PUT(heap_listp, 0);                            // 정렬 패딩
@@ -132,9 +138,11 @@ void *mm_malloc(size_t size)
     if (size == 0)
         return NULL;
 
-    // size가 헤더랑 푸터도 못 넘으면 늘린다
+    // 넣을 데이터의 사이즈가 더블 워드보다 작으면,
+    // 할당할 블록의 크기를 강제로 키워준다
     if (size <= DSIZE)
         asize = 2 * DSIZE;
+    // 아니라면 8바이트 정렬만 맞춰준다
     else
         asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
 
@@ -145,7 +153,7 @@ void *mm_malloc(size_t size)
         return bp;
     }
 
-    // 맞는 가용 블록이 없음. 힙 공간을 추가하고 블록 넣기
+    // 맞는 가용 블록이 없으면 힙 공간을 추가하고 블록 넣기
     extendsize = MAX(asize, CHUNKSIZE);
     if ((bp = extend_heap(extendsize / WSIZE)) == NULL)
         return NULL;
@@ -155,23 +163,35 @@ void *mm_malloc(size_t size)
 
 static void *find_fit(size_t asize)
 {
-    char *bp = (char *)mem_heap_lo;
+    void *bp = heap_listp;
 
-    while (asize <= GET_SIZE(bp))
+    // 힙의 데이터가 시작되는 영역부터 시작해서 에필로그 블록까지 탐색
+    while (GET_SIZE(HDRP(bp)) > 0)
     {
-        // 에필로그 블록까지 탐색했다면 return NULL
-        if (GET_SIZE(bp) == 0)
-            return NULL;
+        // 헤더를 봤더니 할당되어 있지 않고, 충분히 크다면
+        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp))))
+            return bp; // 할당
 
         bp = NEXT_BLKP(bp);
     }
-    return bp;
+    return NULL; // 맞는 블록이 없으면 NULL 반환
 }
 
 static void place(void *bp, size_t asize)
 {
-    PUT(HDRP(bp), PACK(asize, 1));
-    PUT(FTRP(bp), PACK(asize, 1));
+
+    if (GET_SIZE(HDRP(bp)) - asize >= (2 * DSIZE))
+    {
+        PUT(bp + asize - DSIZE, PACK(asize, 1));                      // 새 푸터에 정보 넣기
+        PUT(bp + asize - WSIZE, PACK(GET_SIZE(HDRP(bp)) - asize, 0)); // 새 헤더에 정보 넣기
+        PUT(FTRP(bp), PACK(GET_SIZE(HDRP(bp)) - asize, 0));           // 원래 푸터의 정보 갱신
+        PUT(HDRP(bp), PACK(asize, 1));                                // 원래 헤더의 정보 갱신
+    }
+    else
+    {
+        PUT(HDRP(bp), PACK(GET_SIZE(HDRP(bp)), 1));
+        PUT(FTRP(bp), PACK(GET_SIZE(HDRP(bp)), 1));
+    }
 }
 
 /*
@@ -220,7 +240,7 @@ static void *coalesce(void *bp)
     // case 4 : 이전 블록과 다음 블록 모두 가용 블록. 모두 병합.
     else
     {
-        size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0)); // 이전 가용 블록의 헤더에 기록된 size를 바꾼다
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0)); // (bp에 적힌 size는 아직 바뀌지 않았으니 NEXT_BLKP가 원하는대로 작동)
         bp = PREV_BLKP(bp);
@@ -233,17 +253,34 @@ static void *coalesce(void *bp)
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-    void *oldptr = ptr;
-    void *newptr;
-    size_t copySize;
+    void *oldptr = ptr; // 이전 포인터
+    void *newptr;       // 새로 메모리 할당할포인터
 
-    newptr = mm_malloc(size);
-    if (newptr == NULL)
-        return NULL;
-    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
-    if (size < copySize)
-        copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-    return newptr;
+    size_t originsize = GET_SIZE(HDRP(oldptr)); // 원본 사이즈
+    size_t newsize = size + DSIZE;              // 새 사이즈
+
+    // size 가 더 작은 경우
+    if (newsize <= originsize)
+    {
+        return oldptr;
+    }
+    else
+    {
+        size_t addSize = originsize + GET_SIZE(HDRP(NEXT_BLKP(oldptr))); // 추가 사이즈 -> 헤더 포함 사이즈
+        if (!GET_ALLOC(HDRP(NEXT_BLKP(oldptr))) && (newsize <= addSize))
+        {                                        // 가용 블록이고 사이즈 충분
+            PUT(HDRP(oldptr), PACK(addSize, 1)); // 새로운 헤더
+            PUT(FTRP(oldptr), PACK(addSize, 1)); // 새로운 푸터
+            return oldptr;
+        }
+        else
+        {
+            newptr = mm_malloc(newsize);
+            if (newptr == NULL)
+                return NULL;
+            memmove(newptr, oldptr, newsize); // memcpy 사용 시, memcpy-param-overlap 발생
+            mm_free(oldptr);
+            return newptr;
+        }
+    }
 }
