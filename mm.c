@@ -262,8 +262,13 @@ void *mm_realloc(void *ptr, size_t size)
     // size가 0이거나 음수이면 NULL 반환
     if (newptr == NULL)
         return NULL;
+
+    // copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
+    // 책과 repo 코드의 로직이 달라서 문제가 생긴다. 고쳐줘야 함.
+
     // copy할 size를 oldptr에 역참조한 값에서 추출
-    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
+    copySize = GET_SIZE(HDRP(oldptr));
+
     // 재할당하려는 블록의 크기가 기존 블록의 크기보다 작을 경우,
     // 실제로 복사할 크기를 size로 제한
     if (size < copySize)
