@@ -180,7 +180,7 @@ static void *find_fit(size_t asize)
 static void place(void *bp, size_t asize)
 {
 
-    if (GET_SIZE(HDRP(bp)) - asize >= (2 * DSIZE))
+    if ((GET_SIZE(HDRP(bp)) - asize) >= (2 * DSIZE))
     {
         PUT(bp + asize - DSIZE, PACK(asize, 1));                      // 새 푸터에 정보 넣기
         PUT(bp + asize - WSIZE, PACK(GET_SIZE(HDRP(bp)) - asize, 0)); // 새 헤더에 정보 넣기
@@ -253,34 +253,22 @@ static void *coalesce(void *bp)
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-    void *oldptr = ptr; // 이전 포인터
-    void *newptr;       // 새로 메모리 할당할포인터
+    void *oldptr = ptr;
+    void *newptr;
+    size_t copySize;
 
-    size_t originsize = GET_SIZE(HDRP(oldptr)); // 원본 사이즈
-    size_t newsize = size + DSIZE;              // 새 사이즈
-
-    // size 가 더 작은 경우
-    if (newsize <= originsize)
-    {
-        return oldptr;
-    }
-    else
-    {
-        size_t addSize = originsize + GET_SIZE(HDRP(NEXT_BLKP(oldptr))); // 추가 사이즈 -> 헤더 포함 사이즈
-        if (!GET_ALLOC(HDRP(NEXT_BLKP(oldptr))) && (newsize <= addSize))
-        {                                        // 가용 블록이고 사이즈 충분
-            PUT(HDRP(oldptr), PACK(addSize, 1)); // 새로운 헤더
-            PUT(FTRP(oldptr), PACK(addSize, 1)); // 새로운 푸터
-            return oldptr;
-        }
-        else
-        {
-            newptr = mm_malloc(newsize);
-            if (newptr == NULL)
-                return NULL;
-            memmove(newptr, oldptr, newsize); // memcpy 사용 시, memcpy-param-overlap 발생
-            mm_free(oldptr);
-            return newptr;
-        }
-    }
+    // 새로 할당할 size에 맞는 가용 블록 찾아서 할당
+    newptr = mm_malloc(size);
+    // size가 0이거나 음수이면 NULL 반환
+    if (newptr == NULL)
+        return NULL;
+    // copy할 size를 oldptr에 역참조한 값에서 추출
+    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
+    // 재할당하려는 블록의 크기가 기존 블록의 크기보다 작을 경우,
+    // 실제로 복사할 크기를 size로 제한
+    if (size < copySize)
+        copySize = size;
+    memcpy(newptr, oldptr, copySize);
+    mm_free(oldptr);
+    return newptr;
 }
